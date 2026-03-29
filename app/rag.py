@@ -7,10 +7,10 @@ import dotenv
 dotenv.load_dotenv()  # Load environment variables from .env file
 
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
-client = QdrantClient(host="localhost", port=6333)
+client = QdrantClient(host=os.getenv("QDRANT_HOST", "localhost"), port=6333)
 groq_client = Groq(api_key=os.getenv('GROQ_API_KEY'))
 
-def query_rag(question: str):
+def query_rag(question: str) -> dict:
     # step 1- embed the question using same model used during ingestion
     query_vector = embedder.encode(question).tolist()
     
@@ -42,13 +42,12 @@ def query_rag(question: str):
         ]
     )
     
-    answer = response.choices[0].message.content
-    
     # Step 5 — print answer + which pages it came from
-    print(f"\nQuestion: {question}")
-    print(f"\nAnswer:\n{answer}")
-    print("\nSources:")
-    for r in result:
-        print(f"  Page {r.payload['page']}  (similarity score: {r.score:.3f})")
-    
-query_rag("What is Spring Boot auto-configuration?")
+    return {
+        "question": question,
+        "answer": response.choices[0].message.content,
+        "sources": [
+            {"page": r.payload["page"], "score": round(r.score, 3)}
+            for r in result
+        ]
+    }
