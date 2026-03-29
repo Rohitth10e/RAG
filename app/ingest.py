@@ -9,12 +9,12 @@ import uuid
 
 
 
-pdf_path = Path(__file__).parent / "spring-boot-reference.pdf"
+pdf_path = Path(__file__).resolve().parent.parent / "spring-boot-reference.pdf"
 print(pdf_path)
 
 
 # load pdf, extract text from pdf returns Document objects(often one per page)
-loader = PyPDFLoader(file_path=pdf_path)
+loader = PyPDFLoader(file_path=str(pdf_path))
 docs = loader.load()
 
 # Split the docs into smaller chunks
