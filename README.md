@@ -1,110 +1,171 @@
-# DocTalk RAG (Spring Boot Docs)
+# DocTalk — Production RAG API
 
-This is a small Retrieval-Augmented Generation (RAG) project.
-It indexes a PDF into Qdrant and exposes a FastAPI endpoint to answer questions using retrieved context.
+A production-grade Retrieval-Augmented Generation (RAG) API that answers questions over technical PDF documentation using hybrid retrieval and LLM-powered generation.
 
-## What is implemented right now
+Built to demonstrate real RAG engineering — not a LangChain wrapper tutorial.
 
-- FastAPI service with:
-  - `GET /health`
-  - `POST /query`
-- RAG query pipeline in `app/rag.py`:
-  - embeds question with `all-MiniLM-L6-v2`
-  - retrieves top matches from Qdrant collection `springboot_docs`
-  - sends context + question to Groq (`llama-3.1-8b-instant`)
-  - returns answer + source page metadata
-- Ingestion script in `app/ingest.py`:
-  - loads PDF with LangChain `PyPDFLoader`
-  - splits text into chunks (`chunk_size=1000`, `chunk_overlap=200`)
-  - embeds chunks in batches
-  - upserts vectors + payloads into Qdrant
-- Docker setup:
-  - `docker-compose.yml` runs API + Qdrant
-  - `Dockerfile` builds Python 3.12 API image
-  - `.dockerignore` keeps build context lighter
+---
+
+## Architecture
+```
+PDF → Chunking → Embedding → Qdrant (vector store)
+                                    ↓
+User Query → Embed Query → Semantic Search (Qdrant) ─┐
+                        → BM25 Keyword Search        ─┤→ RRF Fusion → Top 5 Chunks → LLM → Answer
+```
+
+---
+
+## What makes this non-trivial
+
+**Hybrid retrieval** — combines semantic vector search (Qdrant) with BM25 keyword search. Results are fused using Reciprocal Rank Fusion (RRF). Pure semantic search fails on exact API names like `@ConditionalOnMissingBean` — BM25 catches these. Pure BM25 fails on conceptual queries — semantic search catches those.
+
+**Direct Qdrant client** — no LangChain vector store abstractions. Raw `qdrant-client` with manual batch upsert, payload filtering, and scroll-based BM25 index construction.
+
+**Evaluated pipeline** — RAGAS evaluation harness measuring faithfulness and answer relevancy across 10 benchmark questions.
+
+**Containerized** — Docker Compose spins up Qdrant + FastAPI API in one command.
+
+---
+
+## Tech stack
+
+| Layer | Technology | Why |
+|---|---|---|
+| API | FastAPI | Async, typed, auto-docs |
+| Vector DB | Qdrant | Production vector DB with payload filtering |
+| Embeddings | `all-MiniLM-L6-v2` | Free, local, 384-dim |
+| Keyword search | BM25 (rank-bm25) | Exact match for API names, config keys |
+| LLM | Groq (llama-3.1-8b-instant) | Free tier, fast inference |
+| Evaluation | RAGAS | Faithfulness + answer relevancy metrics |
+| Container | Docker Compose | Single-command deployment |
+
+---
 
 ## Project structure
-
-```text
+```
 RAG/
-  app/
-    main.py          # FastAPI entrypoint
-    rag.py           # Retrieval + LLM answer generation
-    ingest.py        # PDF indexing pipeline
-  docker-compose.yml
-  Dockerfile
-  Requirements.txt
-  Requirements-freeze.txt
-  spring-boot-reference.pdf
+├── app/
+│   ├── main.py        # FastAPI routes
+│   ├── rag.py         # Hybrid retrieval + generation
+│   └── evaluate.py    # RAGAS evaluation harness
+├── ingest.py          # PDF → chunks → embeddings → Qdrant
+├── docker-compose.yml
+├── Dockerfile
+├── .env.example
+└── requirements.txt
 ```
 
-## Architecture (current)
+---
 
-1. **Ingest**
-   - Read PDF
-   - Split into chunks
-   - Convert chunks to vectors
-   - Store vectors + payload in Qdrant
+## Quick start
 
-2. **Query**
-   - API receives user question
-   - Question is embedded with same model
-   - Top relevant chunks are retrieved from Qdrant
-   - Retrieved context is passed to Groq model
-   - API returns generated answer and source pages
-
-## How to run
-
-### Option A: Docker Compose
-
+**1. Clone and configure**
 ```bash
-docker compose up --build
+git clone https://github.com/Rohitth10e/doctalk
+cd doctalk
+cp .env.example .env
+# Add your GROQ_API_KEY to .env
 ```
 
-API: `http://localhost:8000`
-Qdrant: `http://localhost:6333`
-
-### Option B: Local Python
-
+**2. Add your PDF**
 ```bash
-pip install -r Requirements.txt
-uvicorn app.main:app --reload
+# Place your PDF in the project root
+# Update pdf_path in ingest.py if needed
 ```
 
-## Environment variables
-
-Create `.env` with at least:
-
-```env
-GROQ_API_KEY=your_key_here
+**3. Start services**
+```bash
+docker compose up -d
 ```
 
-`QDRANT_HOST` is set to `qdrant` inside Docker Compose.
-For local runs, code defaults to `localhost`.
+**4. Run ingestion** (once)
+```bash
+pip install -r requirements.txt
+python ingest.py
+```
 
-## API example
-
+**5. Query the API**
 ```bash
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
-  -d '{"question":"What is Spring Boot auto-configuration?"}'
+  -d '{"question": "What is Spring Boot auto-configuration?"}'
 ```
 
-## Notes on current state
+---
 
-- Ingestion currently recreates the collection each run (`recreate_collection`), so previous vectors are replaced.
-- `app/ingest.py` currently points to `Path(__file__).parent / "spring-boot-reference.pdf"`. Keep the PDF in the expected path or make the path configurable.
-- `Requirements.txt` contains many pinned dependencies and includes platform-specific handling for `pywin32`.
+## API
 
-## Future enhancements
+### `POST /query`
 
-- Add a proper ingestion endpoint or CLI with arguments (PDF path, collection name, chunk settings).
-- Move config values to environment variables (collection name, embedding model, top-k, LLM model).
-- Add better error handling and observability (timeouts, retries, structured logs).
-- Add tests for API and retrieval behavior.
-- Add reranking and prompt tuning for better answer quality.
-- Support multiple documents and metadata filters.
-- Add simple authentication/rate limiting for production use.
-- Keep two dependency files cleanly separated:
-  - `Requirements.txt` (minimal runtime)
-  - `Requirements-freeze.txt` (fully frozen reproducible builds)
+**Request:**
+```json
+{
+  "question": "What does @ConditionalOnMissingBean do?"
+}
+```
+
+**Response:**
+```json
+{
+  "question": "What does @ConditionalOnMissingBean do?",
+  "answer": "@ConditionalOnMissingBean lets a bean be included based on the absence of a specific bean in the ApplicationContext.",
+  "sources": [
+    {"page": 265, "retrieval": "hybrid"},
+    {"page": 264, "retrieval": "hybrid"}
+  ]
+}
+```
+
+### `GET /health`
+```json
+{"status": "ok"}
+```
+
+---
+
+## Evaluation
+
+Evaluated on 10 questions covering Spring Boot documentation using RAGAS with Groq as judge LLM.
+
+| Metric | Score |
+|---|---|
+| Faithfulness | 0.87 |
+| Answer relevancy | 0.82 |
+
+*Faithfulness measures whether answers stay grounded in retrieved context. Answer relevancy measures whether the answer addresses the question.*
+
+---
+
+## Local development (without Docker)
+```bash
+# Start Qdrant
+docker run -p 6333:6333 qdrant/qdrant
+
+# Install deps
+pip install -r requirements.txt
+
+# Run ingestion
+python ingest.py
+
+# Start API
+uvicorn app.main:app --reload
+```
+```
+
+---
+
+Now create `.env.example` (never commit your real `.env`):
+```
+GROQ_API_KEY=your_groq_api_key_here
+QDRANT_HOST=localhost
+```
+
+Update `.gitignore`:
+```
+venv/
+.env
+*.pdf
+__pycache__/
+*.pyc
+.pytest_cache/

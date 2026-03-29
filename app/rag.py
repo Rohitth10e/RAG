@@ -139,10 +139,11 @@ def query_rag(question: str) -> dict:
     )
 
     return {
-        "question": question,
-        "answer": response.choices[0].message.content,
-        "sources": [
-            {"page": hit["page"], "retrieval": "hybrid"}
-            for hit in fused
+    "question": question,
+    "answer": response.choices[0].message.content,
+    "contexts": [{"text": hit["text"], "page": hit["page"]} for hit in fused],
+    "sources": [
+        {"page": hit["page"], "retrieval": "hybrid"}
+        for hit in fused
         ]
     }
